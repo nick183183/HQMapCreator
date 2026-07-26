@@ -1,0 +1,9 @@
+{
+    "nfeatures": 3000,
+    "ratio_threshold": 0.75,
+    "ransac_threshold": 5.0,
+    "method": "sift",
+    "min_inliers_ratio": 0.3,
+    "min_good_matches": 10,
+    "history_size": 3
+}
