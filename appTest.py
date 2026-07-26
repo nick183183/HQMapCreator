@@ -9,11 +9,25 @@ import cv2
 import mss
 from pathlib import Path
 from datetime import datetime
-from PyQt5.QtWidgets import QApplication, QWidget
-from PyQt5.QtCore import Qt, QRect, pyqtSignal, QObject
+from PyQt5.QtWidgets import QApplication, QWidget, QFileDialog
+from PyQt5.QtCore import Qt, QRect, pyqtSignal, QObject, QTimer
 from PyQt5.QtGui import QPainter, QPen, QColor, QPixmap
 
 user32 = ctypes.windll.user32
+
+# Константы Win32
+HWND_TOPMOST = -1
+SWP_NOMOVE = 0x0002
+SWP_NOSIZE = 0x0001
+
+
+def force_topmost(widget):
+    """Принудительно делает окно поверх всех через Win32 API."""
+    try:
+        hwnd = int(widget.winId())
+        user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE)
+    except Exception:
+        pass
 
 
 class Win32HotkeySignals(QObject):
@@ -21,11 +35,13 @@ class Win32HotkeySignals(QObject):
     exit_requested = pyqtSignal()
     save_requested = pyqtSignal()
     select_region_requested = pyqtSignal()
-    undo_requested = pyqtSignal()  # ← F4
+    undo_requested = pyqtSignal()
+    load_first_requested = pyqtSignal()  # F5
 
 
 class Win32HotkeyListener(threading.Thread):
-    VK_F4 = 0x73  # ← новое
+    VK_F4 = 0x73
+    VK_F5 = 0x74  # ← новое: загрузка первого снимка
     VK_F6 = 0x75
     VK_F7 = 0x76
     VK_F8 = 0x77
@@ -37,11 +53,12 @@ class Win32HotkeyListener(threading.Thread):
         self.signals = signals
         self.running = False
         self.hotkey_ids = {
-            1: self.VK_F4,  # ← новое: откат
-            2: self.VK_F6,
-            3: self.VK_F7,
-            4: self.VK_F8,
-            5: self.VK_F9,
+            1: self.VK_F4,
+            2: self.VK_F5,
+            3: self.VK_F6,
+            4: self.VK_F7,
+            5: self.VK_F8,
+            6: self.VK_F9,
         }
 
     def run(self):
@@ -63,12 +80,14 @@ class Win32HotkeyListener(threading.Thread):
                     if hk_id == 1:
                         self.signals.undo_requested.emit()
                     elif hk_id == 2:
-                        self.signals.capture_requested.emit()
+                        self.signals.load_first_requested.emit()
                     elif hk_id == 3:
-                        self.signals.exit_requested.emit()
+                        self.signals.capture_requested.emit()
                     elif hk_id == 4:
-                        self.signals.save_requested.emit()
+                        self.signals.exit_requested.emit()
                     elif hk_id == 5:
+                        self.signals.save_requested.emit()
+                    elif hk_id == 6:
                         self.signals.select_region_requested.emit()
         except Exception as e:
             print(f"Ошибка hotkey listener: {e}")
@@ -87,7 +106,8 @@ class RegionSelector(QWidget):
 
     def __init__(self):
         super().__init__()
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint |
+                            Qt.BypassWindowManagerHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setCursor(Qt.CrossCursor)
 
@@ -97,6 +117,10 @@ class RegionSelector(QWidget):
         self.start_pos = None
         self.end_pos = None
         self.drawing = False
+
+    def show(self):
+        super().show()
+        force_topmost(self)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -146,6 +170,10 @@ class PreviewWindow(QWidget):
 
         self.pixmap = None
         self.drag_pos = None
+
+    def show(self):
+        super().show()
+        force_topmost(self)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -197,7 +225,7 @@ class HUD(QWidget):
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint |
                             Qt.Tool | Qt.WindowDoesNotAcceptFocus)
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setFixedSize(220, 175)  # ← чуть выше для новой строки
+        self.setFixedSize(220, 190)
 
         screen = QApplication.primaryScreen().geometry()
         self.move(screen.width() - 240, 20)
@@ -205,6 +233,10 @@ class HUD(QWidget):
         self.status = "select area"
         self.frame_count = 0
         self.drag_pos = None
+
+    def show(self):
+        super().show()
+        force_topmost(self)
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -220,7 +252,7 @@ class HUD(QWidget):
             "processing": QColor(255, 165, 0),
             "error": QColor(255, 0, 0),
             "first frame": QColor(0, 150, 255),
-            "rejected": QColor(255, 80, 80),  # ← новый статус
+            "rejected": QColor(255, 80, 80),
         }
         painter.setBrush(colors.get(self.status, QColor(128, 128, 128)))
         painter.drawEllipse(15, 15, 30, 30)
@@ -239,9 +271,9 @@ class HUD(QWidget):
         painter.setFont(font)
         painter.setPen(QColor(180, 180, 180))
         painter.drawText(15, 100, "F9: выбрать область")
-        painter.drawText(15, 115, "F6: захват  F4: откат")
-        painter.drawText(15, 130, "F7: выход   F8: сохранить")
-        painter.drawText(15, 145, "F4 — отменить последний шаг")
+        painter.drawText(15, 115, "F5: загрузить снимок")
+        painter.drawText(15, 130, "F6: захват   F4: откат")
+        painter.drawText(15, 145, "F7: выход    F8: сохранить")
 
     def set_status(self, status):
         self.status = status
@@ -273,11 +305,9 @@ class MapStitcherApp:
         self.preview = None
         self.selector = None
 
-        # ← ИСТОРИЯ для отката
-        self.history = []  # стек предыдущих current_image
-        self.history_size = 2  # по умолчанию
+        self.history = []
+        self.history_size = 2
 
-        # Папки
         self.base_dir = Path(__file__).parent
         self.buffer_dir = self.base_dir / "captures"
         self.output_dir = self.base_dir / "output"
@@ -288,13 +318,10 @@ class MapStitcherApp:
 
         self.sct = mss.MSS()
 
-        # Загружаем конфиг и stitcher
         try:
             from algoritmTest import ImageStitcher, StitchQualityError
             self.stitcher = ImageStitcher()
             self.StitchQualityError = StitchQualityError
-            self.history_size = self.stitcher.__dict__.get('history_size', 2)
-            # Читаем history_size из конфига напрямую
             config_path = Path(__file__).parent / "config.json"
             if config_path.exists():
                 import json
@@ -311,9 +338,22 @@ class MapStitcherApp:
         self.hotkey_signals.exit_requested.connect(self._exit)
         self.hotkey_signals.save_requested.connect(self._manual_save)
         self.hotkey_signals.select_region_requested.connect(self._open_region_selector)
-        self.hotkey_signals.undo_requested.connect(self._undo)  # ← F4
+        self.hotkey_signals.undo_requested.connect(self._undo)
+        self.hotkey_signals.load_first_requested.connect(self._load_first_image)
 
         self.hotkey_thread = Win32HotkeyListener(self.hotkey_signals)
+
+        # Таймер для принудительного удержания окон поверх всех
+        self.topmost_timer = QTimer()
+        self.topmost_timer.timeout.connect(self._force_all_topmost)
+        self.topmost_timer.start(1000)  # раз в секунду
+
+    def _force_all_topmost(self):
+        """Периодически поднимает все окна наверх."""
+        if self.hud and self.hud.isVisible():
+            force_topmost(self.hud)
+        if self.preview and self.preview.isVisible():
+            force_topmost(self.preview)
 
     def run(self):
         self.hud = HUD()
@@ -324,37 +364,68 @@ class MapStitcherApp:
         self.preview.show()
 
         self.hotkey_thread.start()
-        print("Готово. F9 — область, F6 — захват, F4 — откат, F7 — выход, F8 — сохранить")
+        print("Готово. F9 — область, F5 — загрузить, F6 — захват, F4 — откат, F7 — выход, F8 — сохранить")
 
         ret = self.app.exec_()
         self.hotkey_thread.stop()
         sys.exit(ret)
 
-    def _push_history(self):
-        """Сохраняет текущее состояние в историю перед изменением."""
-        if self.current_image is not None:
-            self.history.append(self.current_image.copy())
-            # Ограничиваем размер истории
-            if len(self.history) > self.history_size:
-                self.history.pop(0)
+    def _load_first_image(self):
+        """Загрузка первого снимка с диска по F5."""
+        print("Загрузка снимка с диска...")
 
-    def _undo(self):
-        """Откат на шаг назад по F4."""
-        if not self.history:
-            print("Нечего откатывать — история пуста")
+        file_path, _ = QFileDialog.getOpenFileName(
+            None,
+            "Выберите первый снимок",
+            str(self.base_dir),
+            "Изображения (*.png *.jpg *.jpeg *.bmp);;Все файлы (*.*)"
+        )
+
+        if not file_path:
+            print("Выбор отменён")
+            return
+
+        img = cv2.imread(file_path)
+        if img is None:
+            print(f"Не удалось загрузить: {file_path}")
             if self.hud:
                 self.hud.set_status("error")
             return
 
-        # Восстанавливаем предыдущее состояние
+        # Сохраняем как текущее изображение
+        self.current_image = img
+        self.history.clear()  # сбрасываем историю
+
+        if self.hud:
+            self.hud.set_status("ready")
+            self.hud.set_frame_count(1)
+            force_topmost(self.hud)
+
+        self._save_to_buffer(img)
+        print(f"Загружено: {file_path} ({img.shape[1]}x{img.shape[0]})")
+
+    def _push_history(self):
+        if self.current_image is not None:
+            self.history.append(self.current_image.copy())
+            if len(self.history) > self.history_size:
+                self.history.pop(0)
+
+    def _undo(self):
+        if not self.history:
+            print("Нечего откатывать")
+            if self.hud:
+                self.hud.set_status("error")
+            return
+
         self.current_image = self.history.pop()
 
         if self.hud:
             self.hud.set_status("ready")
             self.hud.set_frame_count(max(0, self.hud.frame_count - 1))
+            force_topmost(self.hud)
 
         self._save_to_buffer(self.current_image)
-        print(f"Откат выполнен. Осталось в истории: {len(self.history)}")
+        print(f"Откат выполнен. В истории: {len(self.history)}")
 
     def _open_region_selector(self):
         if self.hud:
@@ -372,8 +443,10 @@ class MapStitcherApp:
             if self.region is None:
                 self.hud.set_status("select area")
             self.hud.show()
+            force_topmost(self.hud)
         if self.preview:
             self.preview.show()
+            force_topmost(self.preview)
 
     def _on_region_selected(self, region):
         self.region = {
@@ -389,9 +462,11 @@ class MapStitcherApp:
             else:
                 self.hud.set_status("ready")
             self.hud.show()
+            force_topmost(self.hud)
 
         if self.preview:
             self.preview.show()
+            force_topmost(self.preview)
 
     def _save_to_buffer(self, image):
         if image is None:
@@ -443,16 +518,16 @@ class MapStitcherApp:
             print("Область не выбрана. Нажми F9")
             if self.hud:
                 self.hud.set_status("select area")
+                force_topmost(self.hud)
             return
 
-        # Статус "в процессе"
         if self.hud:
             self.hud.set_status("processing")
             self.hud.show()
+            force_topmost(self.hud)
             self.app.processEvents()
             time.sleep(0.2)
 
-        # Скрываем HUD перед захватом
         if self.hud:
             self.hud.hide()
             self.app.processEvents()
@@ -467,14 +542,15 @@ class MapStitcherApp:
             if self.hud:
                 self.hud.set_status("error")
                 self.hud.show()
+                force_topmost(self.hud)
             return
 
         if self.hud:
             self.hud.show()
+            force_topmost(self.hud)
             self.app.processEvents()
 
         if self.current_image is None:
-            # Первый кадр — просто сохраняем
             self.current_image = img
             if self.hud:
                 self.hud.set_status("ready")
@@ -485,10 +561,10 @@ class MapStitcherApp:
                 print("Stitcher не доступен")
                 if self.hud:
                     self.hud.set_status("error")
+                    force_topmost(self.hud)
                 return
 
             try:
-                # ← ВАЖНО: сохраняем в историю ПЕРЕД изменением
                 self._push_history()
 
                 result, _ = self.stitcher.stitch(self.current_image, img)
@@ -497,24 +573,25 @@ class MapStitcherApp:
                 if self.hud:
                     self.hud.set_status("ready")
                     self.hud.set_frame_count(self.hud.frame_count + 1)
+                    force_topmost(self.hud)
 
                 self._save_to_buffer(result)
 
             except self.StitchQualityError as e:
-                # ← ПЛОХОЕ КАЧЕСТВО: откатываем историю и НЕ меняем current_image
                 if self.history:
                     self.current_image = self.history.pop()
                 print(f"Склейка отклонена: {e}")
                 if self.hud:
                     self.hud.set_status("rejected")
+                    force_topmost(self.hud)
 
             except Exception as e:
-                # ← ДРУГАЯ ОШИБКА: тоже откатываем
                 if self.history:
                     self.current_image = self.history.pop()
                 print(f"Ошибка склейки: {e}")
                 if self.hud:
                     self.hud.set_status("error")
+                    force_topmost(self.hud)
 
 
 if __name__ == "__main__":
