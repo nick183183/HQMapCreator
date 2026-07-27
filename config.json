@@ -4,6 +4,8 @@
     "ransac_threshold": 5.0,
     "method": "sift",
     "min_inliers_ratio": 0.3,
-    "min_good_matches": 10,
-    "history_size": 3
+    "min_good_matches": 7,
+    "history_size": 2,
+    "search_padding_ratio": 0.3,
+    "transform_type": "affine"
 }
